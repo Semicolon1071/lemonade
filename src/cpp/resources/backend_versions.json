@@ -62,13 +62,17 @@
   },
   "sd-cpp": {
     "cpu": "master-793-78124b6",
-    "rocm-stable": "master-793-78124b6",
+    "rocm-stable": "master-791-b8bf676",
     "vulkan": "master-793-78124b6",
     "cuda": "master-789-65745b4",
     "metal": "master-793-78124b6"
   },
   "therock": {
     "version": "7.14.0",
+    "comment_recipe_versions": "Per-recipe ROCm version overrides. sd-cpp pinned to 7.13.0: the 7.14 gfx1151 Windows GEMM kernel is broken (ROCm/ROCm#6517).",
+    "recipe_versions": {
+      "sd-cpp": "7.13.0"
+    },
     "architectures": [
       "gfx900",
       "gfx906",

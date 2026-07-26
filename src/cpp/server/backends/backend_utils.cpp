@@ -1023,6 +1023,47 @@ namespace lemon::backends {
         return (base / (arch + "-" + version)).string();
     }
 
+    std::string BackendUtils::get_therock_version_for_recipe(const std::string& recipe) {
+        auto config = utils::JsonUtils::load_from_file(
+            utils::get_resource_path("resources/backend_versions.json"));
+        if (!config.contains("therock") || !config["therock"].is_object() ||
+            !config["therock"].contains("version") || !config["therock"]["version"].is_string()) {
+            throw std::runtime_error("backend_versions.json is missing 'therock.version'");
+        }
+        const auto& therock = config["therock"];
+        if (!recipe.empty() && therock.contains("recipe_versions") &&
+            therock["recipe_versions"].is_object() &&
+            therock["recipe_versions"].contains(recipe) &&
+            therock["recipe_versions"][recipe].is_string()) {
+            return therock["recipe_versions"][recipe].get<std::string>();
+        }
+        return therock["version"].get<std::string>();
+    }
+
+    std::vector<std::string> BackendUtils::pinned_therock_versions() {
+        std::vector<std::string> versions;
+        auto config = utils::JsonUtils::load_from_file(
+            utils::get_resource_path("resources/backend_versions.json"));
+        if (!config.contains("therock") || !config["therock"].is_object()) {
+            return versions;
+        }
+        const auto& therock = config["therock"];
+        if (therock.contains("version") && therock["version"].is_string()) {
+            versions.push_back(therock["version"].get<std::string>());
+        }
+        if (therock.contains("recipe_versions") && therock["recipe_versions"].is_object()) {
+            for (const auto& [recipe, ver] : therock["recipe_versions"].items()) {
+                if (ver.is_string()) {
+                    const std::string v = ver.get<std::string>();
+                    if (std::find(versions.begin(), versions.end(), v) == versions.end()) {
+                        versions.push_back(v);
+                    }
+                }
+            }
+        }
+        return versions;
+    }
+
     namespace {
         // A concrete gfx target (e.g. gfx1151, gfx90a) maps to a rocm-sdk-device
         // wheel; family placeholders like gfx110X do not, so those fall back to
@@ -1102,13 +1143,17 @@ namespace lemon::backends {
         }
     }  // namespace
 
-    void BackendUtils::cleanup_old_therock_versions(const std::string& current_version) {
+    void BackendUtils::cleanup_old_therock_versions() {
 #ifdef __linux__
         fs::path therock_base = fs::path(utils::get_downloaded_bin_dir()) / "therock";
 
         if (!fs::exists(therock_base)) {
             return;
         }
+
+        // Keep every pinned version so a recipe on a different ROCm version
+        // than the default isn't wiped.
+        const std::vector<std::string> keep = pinned_therock_versions();
 
         try {
             for (const auto& entry : fs::directory_iterator(therock_base)) {
@@ -1117,7 +1162,7 @@ namespace lemon::backends {
                     size_t dash_pos = dir_name.rfind('-');
                     if (dash_pos != std::string::npos) {
                         std::string version = dir_name.substr(dash_pos + 1);
-                        if (version != current_version) {
+                        if (std::find(keep.begin(), keep.end(), version) == keep.end()) {
                             LOG(DEBUG, "BackendUtils") << "Cleaning up old TheRock version: " << dir_name << std::endl;
                             fs::remove_all(entry.path());
                         }
@@ -1262,14 +1307,20 @@ namespace lemon::backends {
             vf << version;
         }
 
-        // Drop other wheel versions for this base dir to bound disk usage.
+        // Keep every pinned version so a recipe on a different ROCm version isn't wiped.
         fs::path wheels_base = fs::path(utils::get_downloaded_bin_dir()) / "therock-wheels";
-        const std::string keep = fs::path(wheel_dir).filename().string();
+        const std::vector<std::string> keep_versions = pinned_therock_versions();
         for (fs::directory_iterator it(wheels_base, ec), end; it != end && !ec; it.increment(ec)) {
-            if (it->is_directory(ec) && it->path().filename().string() != keep) {
+            if (!it->is_directory(ec)) {
+                continue;
+            }
+            const std::string dir_name = it->path().filename().string();
+            const size_t dash = dir_name.rfind('-');
+            const std::string dir_version =
+                dash == std::string::npos ? "" : dir_name.substr(dash + 1);
+            if (std::find(keep_versions.begin(), keep_versions.end(), dir_version) == keep_versions.end()) {
                 LOG(DEBUG, "BackendUtils")
-                    << "Cleaning up old ROCm wheel install: "
-                    << it->path().filename().string() << std::endl;
+                    << "Cleaning up old ROCm wheel install: " << dir_name << std::endl;
                 fs::remove_all(it->path(), ec);
             }
         }
@@ -1415,7 +1466,7 @@ namespace lemon::backends {
         vf.close();
 
         fs::remove(tarball_path);
-        cleanup_old_therock_versions(version);
+        cleanup_old_therock_versions();
 
         // Send completion notification
         if (progress_cb) {
@@ -1435,21 +1486,17 @@ namespace lemon::backends {
     }
 
     std::string BackendUtils::get_therock_lib_path(const std::string& rocm_arch) {
+        return get_therock_lib_path(rocm_arch, get_therock_version_for_recipe(""));
+    }
+
+    std::string BackendUtils::get_therock_lib_path(const std::string& rocm_arch,
+                                                   const std::string& version) {
 #if !defined(__linux__) && !defined(_WIN32)
+        (void)rocm_arch; (void)version;
         return "";
 #else
-        std::string config_path = utils::get_resource_path("resources/backend_versions.json");
-        json config = utils::JsonUtils::load_from_file(config_path);
-
-        if (!config.contains("therock") || !config["therock"].contains("version")) {
-            throw std::runtime_error("backend_versions.json is missing 'therock.version'");
-        }
-
-        std::string version = config["therock"]["version"].get<std::string>();
-
-        // Prefer the lemonade-managed pip-wheel install when present. Its ROCm
-        // runtime is split across two directories (_rocm_sdk_core/bin and
-        // _rocm_sdk_libraries/bin), recorded in runtime_paths.txt at install time.
+        // Prefer the wheel install when present: its runtime spans two dirs,
+        // recorded in runtime_paths.txt at install time.
         {
             fs::path paths_file =
                 fs::path(get_therock_wheel_dir(rocm_arch, version)) / "runtime_paths.txt";

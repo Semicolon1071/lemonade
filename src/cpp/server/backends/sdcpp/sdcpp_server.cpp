@@ -70,14 +70,9 @@ std::string trim_to_major_minor(const std::string& version) {
 }
 
 std::string get_therock_version() {
-    auto config = JsonUtils::load_from_file(utils::get_resource_path("resources/backend_versions.json"));
-    if (!config.contains("therock") || !config["therock"].is_object() ||
-        !config["therock"].contains("version") || !config["therock"]["version"].is_string()) {
-        throw std::runtime_error("backend_versions.json is missing 'therock.version'");
-    }
-    // stable-diffusion.cpp release assets include full ROCm runtime version in filenames
-    // (for example: rocm-7.12.0), so keep the patch component.
-    return trim_version_prefix(config["therock"]["version"].get<std::string>());
+    // sd-cpp is pinned to ROCm 7.13: the 7.14 gfx1151 Windows GEMM kernel is
+    // broken (ROCm/ROCm#6517). sd.cpp assets carry the full version, keep the patch.
+    return trim_version_prefix(BackendUtils::get_therock_version_for_recipe("sd-cpp"));
 }
 
 int generate_random_seed() {
@@ -303,7 +298,7 @@ void SDServer::load(const std::string& model_name,
     if (resolved_backend == "rocm-stable") {
         std::string rocm_arch = SystemInfo::get_rocm_arch();
         if (!rocm_arch.empty()) {
-            std::string therock_lib = BackendUtils::get_therock_lib_path(rocm_arch);
+            std::string therock_lib = BackendUtils::get_therock_lib_path(rocm_arch, get_therock_version());
             if (!therock_lib.empty()) {
                 lib_path = therock_lib + ":" + lib_path;
             }
@@ -326,7 +321,7 @@ void SDServer::load(const std::string& model_name,
         if (resolved_backend == "rocm-stable") {
             std::string rocm_arch = SystemInfo::get_rocm_arch();
             if (!rocm_arch.empty()) {
-                std::string therock_bin = BackendUtils::get_therock_lib_path(rocm_arch);
+                std::string therock_bin = BackendUtils::get_therock_lib_path(rocm_arch, get_therock_version());
                 if (!therock_bin.empty()) {
                     new_path = path_to_utf8(fs::absolute(path_from_utf8(therock_bin))) + ";" + new_path;
                 }

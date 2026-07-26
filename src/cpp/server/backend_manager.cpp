@@ -218,7 +218,8 @@ bool backend_update_required(const std::string& recipe, const std::string& backe
     return false;
 }
 
-bool will_install_therock(const std::string& os, const json& backend_versions) {
+bool will_install_therock(const std::string& os, const json& backend_versions,
+                          const std::string& therock_version) {
     // TheRock is needed on Linux and Windows for ROCm stable channel.
     if (os != "linux" && os != "windows") {
         return false;
@@ -228,7 +229,6 @@ bool will_install_therock(const std::string& os, const json& backend_versions) {
     if (!backend_versions.contains("therock") || !backend_versions["therock"].contains("version")) {
         return false;
     }
-    std::string therock_version = backend_versions["therock"]["version"].get<std::string>();
     std::string expected_rocm_version = normalize_runtime_version(therock_version);
 
     // Check if system ROCm matches TheRock version - if so, don't need TheRock.
@@ -267,7 +267,8 @@ bool will_install_therock(const std::string& os, const json& backend_versions) {
     return true;
 }
 
-bool is_therock_installed_for_current_arch(const json& backend_versions) {
+bool is_therock_installed_for_current_arch(const json& backend_versions,
+                                           const std::string& version) {
     if (!backend_versions.contains("therock") ||
         !backend_versions["therock"].contains("version")) {
         return false;
@@ -278,7 +279,6 @@ bool is_therock_installed_for_current_arch(const json& backend_versions) {
         return false;
     }
 
-    const std::string version = backend_versions["therock"]["version"].get<std::string>();
     const fs::path tarball_version_file =
         fs::path(backends::BackendUtils::get_therock_install_dir(rocm_arch, version)) / "version.txt";
     if (read_version_file(tarball_version_file) == version) {
@@ -292,13 +292,13 @@ bool is_therock_installed_for_current_arch(const json& backend_versions) {
 }
 
 void install_therock_if_needed(const std::string& os, const json& backend_versions,
+                              const std::string& version,
                               DownloadProgressCallback progress_cb = nullptr) {
-    if (!will_install_therock(os, backend_versions)) {
+    if (!will_install_therock(os, backend_versions, version)) {
         return;
     }
 
     std::string rocm_arch = SystemInfo::get_rocm_arch();
-    std::string version = backend_versions["therock"]["version"].get<std::string>();
 
     // Install the ROCm runtime (pip wheels preferred, TheRock tarball fallback)
     backends::BackendUtils::install_rocm_runtime(rocm_arch, version, progress_cb);
@@ -596,17 +596,19 @@ void BackendManager::install_backend(const std::string& recipe, const std::strin
     // for this OS/arch/config; it does not check Lemonade's local TheRock cache.
     // Do that here before inflating the install to a multi-file UX flow.
     const std::string os = get_current_os();
+    const std::string therock_version =
+        backends::BackendUtils::get_therock_version_for_recipe(recipe);
     const bool is_rocm_stable_backend =
         backends::recipe_has_rocm_channels(recipe) &&
         resolved_backend == "rocm-stable";
     const bool therock_applicable =
-        is_rocm_stable_backend && will_install_therock(os, backend_versions_);
+        is_rocm_stable_backend && will_install_therock(os, backend_versions_, therock_version);
     const bool rocm_runtime_update_required =
         therock_applicable && backend_update_required(recipe, backend);
     const bool needs_therock_download =
         therock_applicable &&
         (rocm_runtime_update_required ||
-         !is_therock_installed_for_current_arch(backend_versions_));
+         !is_therock_installed_for_current_arch(backend_versions_, therock_version));
 
     struct RuntimeInstallStep {
         std::string name;
@@ -617,26 +619,27 @@ void BackendManager::install_backend(const std::string& recipe, const std::strin
     if (needs_therock_download) {
         runtime_steps.push_back({
             "TheRock runtime",
-            [this, os, rocm_runtime_update_required](DownloadProgressCallback runtime_progress_cb) {
+            [this, os, therock_version, rocm_runtime_update_required](DownloadProgressCallback runtime_progress_cb) {
                 if (rocm_runtime_update_required) {
                     const std::string rocm_arch = SystemInfo::get_rocm_arch();
                     if (rocm_arch.empty()) {
                         throw std::runtime_error("Cannot repair TheRock runtime: ROCm architecture could not be detected");
                     }
 
-                    const std::string version = backend_versions_["therock"]["version"].get<std::string>();
-                    const std::string install_dir =
-                        backends::BackendUtils::get_therock_install_dir(rocm_arch, version);
-
+                    // Clear both the tarball and wheel trees so the reinstall re-fetches.
                     std::error_code ec;
-                    fs::remove_all(install_dir, ec);
-                    if (ec) {
-                        throw std::runtime_error("Failed to remove existing TheRock runtime '" +
-                                                 install_dir + "': " + ec.message());
+                    for (const std::string& install_dir : {
+                             backends::BackendUtils::get_therock_install_dir(rocm_arch, therock_version),
+                             backends::BackendUtils::get_therock_wheel_dir(rocm_arch, therock_version)}) {
+                        fs::remove_all(install_dir, ec);
+                        if (ec) {
+                            throw std::runtime_error("Failed to remove existing TheRock runtime '" +
+                                                     install_dir + "': " + ec.message());
+                        }
                     }
                 }
 
-                install_therock_if_needed(os, backend_versions_, runtime_progress_cb);
+                install_therock_if_needed(os, backend_versions_, therock_version, runtime_progress_cb);
             }
         });
     }

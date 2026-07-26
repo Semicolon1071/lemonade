@@ -143,6 +143,12 @@ namespace lemon::backends {
         /** Get TheRock installation directory for a specific architecture and version */
         static std::string get_therock_install_dir(const std::string& arch, const std::string& version);
 
+        /** ROCm version for a recipe: therock.recipe_versions override, else therock.version. */
+        static std::string get_therock_version_for_recipe(const std::string& recipe);
+
+        /** Every ROCm version the config pins (top-level plus recipe overrides). */
+        static std::vector<std::string> pinned_therock_versions();
+
         /** Install the ROCm runtime for the given architecture, preferring pip
          *  wheels (into a lemonade-managed venv) and falling back to the TheRock
          *  tarball when Python/venv/pip is unavailable or the wheel install fails. */
@@ -163,11 +169,14 @@ namespace lemon::backends {
         static void install_therock(const std::string& arch, const std::string& version,
                                    DownloadProgressCallback progress_cb = nullptr);
 
-        /** Clean up old TheRock versions, keeping only the specified version */
-        static void cleanup_old_therock_versions(const std::string& current_version);
+        /** Remove TheRock installs whose version is no longer pinned. */
+        static void cleanup_old_therock_versions();
 
-        /** Get TheRock lib directory path if available, or empty string if not needed */
+        /** Get TheRock lib directory path (top-level version), or "" if not installed. */
         static std::string get_therock_lib_path(const std::string& rocm_arch);
+
+        /** Get TheRock lib directory path for a specific ROCm version, or "" if not installed. */
+        static std::string get_therock_lib_path(const std::string& rocm_arch, const std::string& version);
 
         /** Get the path to the backend's binary. Gives precedence to the path set through environment variables, if set. Throws if not found. */
         static std::string get_backend_binary_path(const BackendSpec& spec, const std::string& backend);
